@@ -2,6 +2,7 @@ package http2
 
 import (
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -122,22 +123,30 @@ func (pool *SimplePool) Do(req *http.Request) (resp *http.Response, err error) {
 		req.URL.Host = pool.addr
 	}
 
-	// transport.ResponseHeaderTimeout doesn't encompass the time it takes to write the full
-	// request, thus timeout for reading the body should be handled by the caller who is
-	// consuming the response.
 	resp, err = conn.Do(req)
 	if err != nil {
-		var isDialError bool
-		if urlErr, ok := err.(*url.Error); ok {
-			if strings.HasPrefix(urlErr.Err.Error(), dialErrorMsgPrefix) {
-				isDialError = true
-			}
-		}
-		if isDialError {
+		if urlErr, ok := err.(*url.Error); ok &&
+			strings.HasPrefix(urlErr.Err.Error(), dialErrorMsgPrefix) {
 			err = DialError{errors.Wrap(err, "SimplePool: Dial Error")}
 		} else {
 			err = errors.Wrap(err, err.Error())
 		}
+	}
+	return
+}
+
+// Set a local timeout the actually cancels the request if we've given up.
+func (pool *SimplePool) DoWithTimeout(req *http.Request,
+	timeout time.Duration) (resp *http.Response, err error) {
+	var timer *time.Timer
+	if timeout > 0 {
+		timer = time.AfterFunc(timeout, func() {
+			pool.transport.CancelRequest(req)
+		})
+	}
+	resp, err = pool.Do(req)
+	if timer != nil && err == nil {
+		resp.Body = &cancelTimerBody{timer, resp.Body}
 	}
 	return
 }
@@ -154,4 +163,23 @@ func (pool *SimplePool) Get() (*http.Client, error) {
 // Closes all idle connections in this pool
 func (pool *SimplePool) Close() {
 	pool.transport.CloseIdleConnections()
+}
+
+type cancelTimerBody struct {
+	t  *time.Timer
+	rc io.ReadCloser
+}
+
+func (b *cancelTimerBody) Read(p []byte) (n int, err error) {
+	n, err = b.rc.Read(p)
+	if err == io.EOF {
+		b.t.Stop()
+	}
+	return
+}
+
+func (b *cancelTimerBody) Close() error {
+	err := b.rc.Close()
+	b.t.Stop()
+	return err
 }

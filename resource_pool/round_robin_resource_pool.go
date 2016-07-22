@@ -1,11 +1,11 @@
 package resource_pool
 
 import (
-	"math/rand"
 	"sync"
 	"sync/atomic"
 
 	"github.com/dropbox/godropbox/errors"
+	"github.com/dropbox/godropbox/math2/rand2"
 )
 
 type ResourceLocationPool struct {
@@ -15,7 +15,7 @@ type ResourceLocationPool struct {
 
 func shuffle(pools []*ResourceLocationPool) {
 	for i := len(pools) - 1; i > 0; i-- {
-		idx := rand.Intn(i + 1)
+		idx := rand2.Intn(i + 1)
 		pools[i], pools[idx] = pools[idx], pools[i]
 	}
 }
@@ -80,10 +80,11 @@ func NewRoundRobinResourcePool(
 
 // See ResourcePool for documentation.
 func (p *RoundRobinResourcePool) NumActive() int32 {
+	total := int32(0)
+
 	p.rwMutex.RLock()
 	defer p.rwMutex.RUnlock()
 
-	total := int32(0)
 	for _, locPool := range p.pools {
 		total += locPool.Pool.NumActive()
 	}
@@ -91,11 +92,28 @@ func (p *RoundRobinResourcePool) NumActive() int32 {
 }
 
 // See ResourcePool for documentation.
-func (p *RoundRobinResourcePool) NumIdle() int {
+func (p *RoundRobinResourcePool) ActiveHighWaterMark() int32 {
+	high := int32(0)
+
 	p.rwMutex.RLock()
 	defer p.rwMutex.RUnlock()
 
+	for _, locPool := range p.pools {
+		val := locPool.Pool.ActiveHighWaterMark()
+		if val > high {
+			high = val
+		}
+	}
+	return high
+}
+
+// See ResourcePool for documentation.
+func (p *RoundRobinResourcePool) NumIdle() int {
 	total := 0
+
+	p.rwMutex.RLock()
+	defer p.rwMutex.RUnlock()
+
 	for _, locPool := range p.pools {
 		total += locPool.Pool.NumIdle()
 	}
